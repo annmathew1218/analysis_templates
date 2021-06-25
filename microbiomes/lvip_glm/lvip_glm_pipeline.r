@@ -17,12 +17,9 @@ modelMat <- modelMat[-1,]
 idx <- sapply(factorNames, function(x) which(x == unique(factorNames)))
 
 library(ape)
-microbeTree <- chronoMPL(phytools::midpoint.root(read.tree(phy_fp)))
-microbeTree$edge.length[microbeTree$edge.length <= 0] <- min(microbeTree$edge.length[microbeTree$edge.length > 0])
-microbeTree <- phytools::force.ultrametric(microbeTree)
-microbeTree$edge.length <- microbeTree$edge.length / max(phytools::nodeHeights(microbeTree))
-microbeTree <- di2multi(microbeTree)
+microbeTree <- phytools::midpoint.root(read.tree(phy_fp))
 finalMicrobeTree <- reorder(drop.tip(microbeTree, microbeTree$tip.label[!microbeTree$tip.label %in% colnames(counts)]), 'pruningwise')
+finalMicrobeTree$edge.length <- finalMicrobeTree$edge.length / mean(finalMicrobeTree$edge.length)
 
 counts <- counts[,finalMicrobeTree$tip.label]
 
@@ -32,7 +29,7 @@ NT <- length(microbeTips)
 NI <- finalMicrobeTree$Nnode
 NN <- NI + NT
 sa <- rbind(finalMicrobeTree$edge,c(0,NT+1))[NN:1,]
-time <- c(finalMicrobeTree$edge.length[1:length(finalMicrobeTree$tip.label)],1,finalMicrobeTree$edge.length[(length(finalMicrobeTree$tip.label)+1):length(finalMicrobeTree$edge.length)])
+divergence <- c(finalMicrobeTree$edge.length[1:length(finalMicrobeTree$tip.label)],1,finalMicrobeTree$edge.length[(length(finalMicrobeTree$tip.label)+1):length(finalMicrobeTree$edge.length)])
 
 ##
 NS <- nrow(modelMat)
@@ -51,7 +48,7 @@ standat <- list(NS                 = NS,
                 NSB                = NSB,
                 idx                = idx,
                 count              = t(counts),
-                time               = time,
+                divergence         = divergence,
                 self               = sa[,2],
                 ancestor           = sa[,1],
                 X_s                = modelMat,
