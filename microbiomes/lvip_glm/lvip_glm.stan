@@ -2,7 +2,7 @@
 data {
     int<lower=2> NT;                        // number of microbial tips
     int<lower=1> NI;                        // number of microbial internal nodes
-    vector<lower=0>[NT + NI] divergence;    // branch lengths based sequence divergence between adjacent microbial tips/nodes. standardize so mean is 1
+    vector<lower=0>[NT+NI-1] divergence;    // branch lengths based sequence divergence between adjacent microbial tips/nodes. standardize so mean is 1
     array[NT + NI] int self;                // index for each microbial tip/node in a single vector
     array[NT + NI] int ancestor;            // index for each microbial tip/node's ancestor in a single vector
     int NS;                                 // number of samples
@@ -29,9 +29,10 @@ transformed data {
     }
 }
 parameters {
-    vector<lower=0,upper=1>[NN] time_raw;  // branch lengths based on divergence times between adjacent microbial tips/nodes.
+    vector<lower=0,upper=1>[NI-1] time_raw;  // fraction of ancestral height for each node
     real<lower=0> seq_div_rate;
-    real<lower=0> global_scale;
+    real<lower=0> global_scale_prevalence;
+    real<lower=0> global_scale_abundance;
     vector<lower=0>[NSB] sd_prevalence;    // variance of sample effects
     vector<lower=0>[NSB+1] sd_abundance;   // variance of sample effects
     vector<lower=0>[NSB] sigma_prevalence; // rate of evolution of sample effects
@@ -43,8 +44,8 @@ parameters {
     real<upper=0> inv_log_less_contamination; // smaller = less average contamination
     real<lower=0> contaminant_overdisp;            // dispersion parameter for amount of contamination in true negative count observations
 }
-
 transformed parameters {
+    vector[NN] time_absolute;
     vector[NN] time;
     vector[NN] time_sqrt;
     vector[NN] time_log;
@@ -55,12 +56,23 @@ transformed parameters {
     vector[NSB] alpha_abundance = exp(alpha_abundance_log);
     matrix[NB_s,NN] beta_prevalence;
     matrix[NB_s,NN] beta_abundance;
+    time_absolute[self[1]] = 1; //
     time[self[1]] = 1; //
-    for(m in 2:NN) {
-      time[self[m]] = time[ancestor[m]] * time_raw[self[m]];
+    {
+        int i = 1;
+        for(m in 2:NN) {
+            if(self[m] > NT) {
+                // if node is internal, set height as fraction of ancestor's height, and set edge length equal to as difference between the heights
+                time_absolute[self[m]] = time_absolute[ancestor[m]] * time_raw[i];
+                time[self[m]] = time_absolute[ancestor[m]] - time_absolute[self[m]];
+                i += 1;
+            } else {
+                // if node is a tip, set height as zero, and set edge length equal to height of ancestor
+                time_absolute[self[m]] = 0;
+                time[self[m]] = time_absolute[ancestor[m]];
+            }
+        }
     }
-    time = 1 - time;
-    time[self[1]] = 1; // makes total height of tree 2
     time_sqrt = sqrt(time);
     time_log = log(time);
     beta_prevalence[,self[1]] = sigma_prevalence[idx] * time_sqrt[self[1]] .* delta_prevalence[,self[1]];
@@ -84,11 +96,12 @@ model {
                    + log_inv_logit(beta_prevalence[1,])
                    + log_less_contamination,
                    NS); // this doesn't allow for phylogenetic correlation in residuals, and doesn't need to be a matrix until it does
-    target += cauchy_lpdf(seq_div_rate | 0, 2.5);
-    target += lognormal_lpdf(divergence | seq_div_rate * time_sqrt, 0.1);
-    target += student_t_lpdf(global_scale | 5, 0, 2.5);
-    target += student_t_lpdf(sd_prevalence | 5, 0, global_scale);
-    target += student_t_lpdf(sd_abundance | 5, 0, global_scale);
+    target += student_t_lpdf(seq_div_rate | 5, 0, 2.5);
+    target += student_t_lpdf(divergence | 5, 0, seq_div_rate * append_row(time_sqrt[1:NT],time_sqrt[(NT+2):NN]));
+    target += student_t_lpdf(global_scale_prevalence | 5, 0, 2.5);
+    target += student_t_lpdf(global_scale_abundance | 5, 0, 2.5);
+    target += student_t_lpdf(sd_prevalence | 5, 0, global_scale_prevalence);
+    target += student_t_lpdf(sd_abundance | 5, 0, global_scale_abundance);
     target += cauchy_lpdf(sigma_prevalence | 0,2.5);
     target += cauchy_lpdf(sigma_abundance | 0,2.5);
     target += student_t_lpdf(to_vector(delta_prevalence) | 5,0,1); // fixed rate of evolution but allowing outliers

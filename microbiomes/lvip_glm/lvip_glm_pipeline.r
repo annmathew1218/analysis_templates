@@ -19,7 +19,7 @@ idx <- sapply(factorNames, function(x) which(x == unique(factorNames)))
 library(ape)
 microbeTree <- phytools::midpoint.root(read.tree(phy_fp))
 finalMicrobeTree <- reorder(drop.tip(microbeTree, microbeTree$tip.label[!microbeTree$tip.label %in% colnames(counts)]), 'pruningwise')
-finalMicrobeTree$edge.length <- finalMicrobeTree$edge.length / mean(finalMicrobeTree$edge.length)
+finalMicrobeTree$edge.length <- finalMicrobeTree$edge.length / mean(phytools::nodeHeights(finalMicrobeTree)[finalMicrobeTree$edge[,2] <= length(finalMicrobeTree$tip.label),2])
 
 counts <- counts[,finalMicrobeTree$tip.label]
 
@@ -29,7 +29,7 @@ NT <- length(microbeTips)
 NI <- finalMicrobeTree$Nnode
 NN <- NI + NT
 sa <- rbind(finalMicrobeTree$edge,c(0,NT+1))[NN:1,]
-divergence <- c(finalMicrobeTree$edge.length[1:length(finalMicrobeTree$tip.label)],1,finalMicrobeTree$edge.length[(length(finalMicrobeTree$tip.label)+1):length(finalMicrobeTree$edge.length)])
+divergence <- finalMicrobeTree$edge.length[order(finalMicrobeTree$edge[,2])]
 
 ##
 NS <- nrow(modelMat)
@@ -151,8 +151,8 @@ delta_prevalence_from_root <- array(dim=dim(delta_prevalence))
 for(fact in 1:dim(delta_prevalence)[[3]]) {
   for(chain in 1:dim(delta_prevalence)[[2]]) {
     for(iter in 1:dim(delta_prevalence)[[1]]) {
-      phy2$edge.length <- delta_prevalence[iter,chain,fact,-(NT+1)]
-      temp <- phytools::nodeHeights(phy2)[,2]
+      phy2$edge.length <- delta_prevalence[iter,chain,fact,phy2$edge[,2]]
+      temp <- phytools::nodeHeights(phy2)[order(phy2$edge[,2]),2]
       delta_prevalence_from_root[iter,chain,fact,] <- c(temp[1:NT],delta_prevalence[iter,chain,fact,NT+1],temp[(NT+1):(NN-1)])
     }
   }
@@ -169,8 +169,6 @@ delta_prevalence_from_root_sig <- array(anysig,dim=c(NB_s,NN))
 which(delta_prevalence_from_root_sig, arr.ind = T)
 
 
-
-
 delta_abundance <- stan.fit.draws[,,grep('^delta_abundance\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
 
 pos1 <- apply(delta_abundance,c(2,3),monteCarloP,pn='p')
@@ -179,6 +177,9 @@ neg1 <- apply(delta_abundance,c(2,3),monteCarloP,pn='n')
 negsig <- neg1 < 0.05
 anysig <- possig | negsig
 delta_abundance_sig <- array(anysig,dim=c(NB_s,NN))
+
+which(delta_abundance_sig, arr.ind = T)
+
 
 delta_abundance_med <- apply(delta_abundance,3,median)
 delta_abundance_med <- array(delta_abundance_med,dim=c(NB_s,NN))
@@ -189,8 +190,8 @@ delta_abundance_from_root <- array(dim=dim(delta_abundance))
 for(fact in 1:dim(delta_abundance)[[3]]) {
   for(chain in 1:dim(delta_abundance)[[2]]) {
     for(iter in 1:dim(delta_abundance)[[1]]) {
-      phy2$edge.length <- delta_abundance[iter,chain,fact,-(NT+1)]
-      temp <- phytools::nodeHeights(phy2)[,2]
+      phy2$edge.length <- delta_abundance[iter,chain,fact,phy2$edge[,2]]
+      temp <- phytools::nodeHeights(phy2)[order(phy2$edge[,2]),2]
       delta_abundance_from_root[iter,chain,fact,] <- c(temp[1:NT],delta_abundance[iter,chain,fact,NT+1],temp[(NT+1):(NN-1)])
     }
   }
@@ -204,5 +205,18 @@ negsig <- neg1 < 0.1
 anysig <- possig | negsig
 delta_abundance_from_root_sig <- array(anysig,dim=c(NB_s,NN))
 
+which(delta_abundance_from_root_sig, arr.ind = T)
+
 tax <- read.table(taxa_fp, sep='\t', row.names=1)
 tax[finalMicrobeTree$tip.label[phangorn::Descendants(finalMicrobeTree,2835)[[1]]],]
+
+
+
+time <- stan.fit.draws[,,grep('^time\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+time <- apply(time,3,median)
+
+phy2$edge.length <- rev(time[sa[,2]])
+
+
+time_absolute <- stan.fit.draws[,,grep('^time_absolute\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+
