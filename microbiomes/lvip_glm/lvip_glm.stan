@@ -33,8 +33,8 @@ parameters {
     real<lower=0> seq_div_rate;
     real<lower=0> global_scale_prevalence;
     real<lower=0> global_scale_abundance;
-    vector<lower=0>[NSB] sd_prevalence;    // variance of sample effects
-    vector<lower=0>[NSB+1] sd_abundance;   // variance of sample effects
+    simplex[NSB] var_prop_prevalence;    // proportion of variance of sample effects
+    simplex[NSB+1] var_prop_abundance;   // proportion of variance of sample effects
     vector<lower=0>[NSB] sigma_prevalence; // rate of evolution of sample effects
     vector<lower=0>[NSB] sigma_abundance;  //  rate of evolution of sample effects
     matrix[NB_s,NN] delta_prevalence;
@@ -50,6 +50,8 @@ transformed parameters {
     vector[NN] time_sqrt;
     vector[NN] time_log;
     real log_less_contamination = inv(inv_log_less_contamination);
+    vector[NSB] sd_prevalence = sqrt(var_prop_prevalence) * global_scale_prevalence;
+    vector[NSB+1] sd_abundance = sqrt(var_prop_abundance) * global_scale_abundance;
     vector[NSB] alpha_prevalence_log = 2*(sigma_prevalence - sd_prevalence) - log2(); // OU alpha_prevalence is function of total variance for each factor and the rate of evolution at each branch (http://web.math.ku.dk/~susanne/StatDiff/Overheads1b)
     vector[NSB] alpha_abundance_log = 2*(sigma_abundance - sd_abundance[1:NSB]) - log2(); // OU alpha_abundance is function of total variance for each factor and the rate of evolution at each branch
     vector[NSB] alpha_prevalence = exp(alpha_prevalence_log);
@@ -75,20 +77,21 @@ transformed parameters {
     }
     time_sqrt = sqrt(time);
     time_log = log(time);
-    beta_prevalence[,self[1]] = sigma_prevalence[idx] * time_sqrt[self[1]] .* delta_prevalence[,self[1]];
-    beta_abundance[,self[1]] = sigma_abundance[idx] * time_sqrt[self[1]] .* delta_abundance[,self[1]];
+    beta_prevalence[,self[1]] = sd_prevalence[idx] .* delta_prevalence[,self[1]];
+    beta_abundance[,self[1]] = sd_abundance[idx] .* delta_abundance[,self[1]];
     for(m in 2:NN) {
-       vector[NSB] prop_prevalence = exp(-exp(alpha_prevalence_log + time_log[self[m]])); // OU process takes time-and-sigma-weighted mean state
-       vector[NSB] prop_abundance = exp(-exp(alpha_abundance_log + time_log[self[m]])); // OU process takes time-and-sigma-weighted mean state
-       beta_prevalence[,self[m]]
-           = prop_prevalence[idx] .* beta_prevalence[,ancestor[m]]
-             + sigma_prevalence[idx] * time_sqrt[self[m]] .* delta_prevalence[,self[m]];
-       beta_abundance[,self[m]]
-           = prop_abundance[idx] .* beta_abundance[,ancestor[m]]
-             + sigma_abundance[idx] * time_sqrt[self[m]] .* delta_abundance[,self[m]];
+        vector[NSB] natp = -exp(alpha_prevalence_log + time_log[self[m]]);
+        vector[NSB] nata = -exp(alpha_abundance_log + time_log[self[m]]);
+        beta_prevalence[,self[m]]
+            = exp(natp)[idx] .* beta_prevalence[,ancestor[m]]
+              + sigma_prevalence[idx] .* exp(0.5 * log1m_exp(2 * natp[idx]) - (sigma_prevalence - sd_prevalence)[idx] - log2()) .* delta_prevalence[,self[m]];
+        beta_abundance[,self[m]]
+            = exp(nata)[idx] .* beta_abundance[,ancestor[m]]
+              + sigma_abundance[idx] .* exp(0.5 * log1m_exp(2 * nata[idx]) - (sigma_abundance - sd_abundance[1:NSB])[idx] - log2()) .* delta_abundance[,self[m]];
     }
 }
 model {
+    // data wrangling
     matrix[NS,NN] prevalence = X_s * beta_prevalence;
     matrix[NS,NN] abundance_predicted = X_s * beta_abundance;
     matrix[NS,NN] abundance_contam
@@ -96,18 +99,18 @@ model {
                    + log_inv_logit(beta_prevalence[1,])
                    + log_less_contamination,
                    NS); // this doesn't allow for phylogenetic correlation in residuals, and doesn't need to be a matrix until it does
+    // priors
     target += student_t_lpdf(seq_div_rate | 5, 0, 2.5);
-    target += student_t_lpdf(divergence | 5, 0, seq_div_rate * append_row(time_sqrt[1:NT],time_sqrt[(NT+2):NN]));
     target += student_t_lpdf(global_scale_prevalence | 5, 0, 2.5);
     target += student_t_lpdf(global_scale_abundance | 5, 0, 2.5);
-    target += student_t_lpdf(sd_prevalence | 5, 0, global_scale_prevalence);
-    target += student_t_lpdf(sd_abundance | 5, 0, global_scale_abundance);
-    target += cauchy_lpdf(sigma_prevalence | 0,2.5);
-    target += cauchy_lpdf(sigma_abundance | 0,2.5);
+    target += student_t_lpdf(sigma_prevalence | 5, 0, 2.5);
+    target += student_t_lpdf(sigma_abundance | 5, 0, 2.5);
     target += student_t_lpdf(to_vector(delta_prevalence) | 5,0,1); // fixed rate of evolution but allowing outliers
     target += student_t_lpdf(to_vector(delta_abundance) | 5,0,1); // fixed rate of evolution but allowing outliers
     target += generalized_std_normal_1_lpdf(inv_log_less_contamination / inv_log_max_contam | shape_gnorm);   // shrink amount of contamination in 'true zeros' toward zero
     target += lognormal_lpdf(contaminant_overdisp | 0, 0.1);                                               // shrink overdispersion of contaminant counts in 'true zeros' toward zero
+    // likelihood
+    target += student_t_lpdf(divergence | 5, 0, seq_div_rate * append_row(time_sqrt[1:NT],time_sqrt[(NT+2):NN]));
     for(m in 1:NT) {
         for(s in 1:NS) {
             target += log_sum_exp(log1m_inv_logit(prevalence[s,m])
