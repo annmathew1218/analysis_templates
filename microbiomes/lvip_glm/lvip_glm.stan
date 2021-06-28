@@ -33,10 +33,11 @@ parameters {
     real<lower=0> seq_div_rate;
     real<lower=0> global_scale_prevalence;
     real<lower=0> global_scale_abundance;
-    simplex[NSB] var_prop_prevalence;    // proportion of variance of sample effects
+    simplex[2*NSB] var_prop_prevalence;    // proportion of variance of sample effects
     simplex[NSB+1] var_prop_abundance;   // proportion of variance of sample effects
     vector<lower=0>[NSB] sigma_prevalence; // rate of evolution of sample effects
     vector<lower=0>[NSB] sigma_abundance;  //  rate of evolution of sample effects
+    vector[NB_s] theta_prevalence; // OU long-term mean or ideal, to which values are attracted. Also interpretable as alpha diversity
     matrix[NB_s,NN] delta_prevalence;
     matrix[NB_s,NN] delta_abundance;
     matrix[NS,NT] abundance_observed;
@@ -50,9 +51,9 @@ transformed parameters {
     vector[NN] time_sqrt;
     vector[NN] time_log;
     real log_less_contamination = inv(inv_log_less_contamination);
-    vector[NSB] sd_prevalence = sqrt(var_prop_prevalence) * global_scale_prevalence;
+    vector[2*NSB] sd_prevalence = sqrt(var_prop_prevalence) * global_scale_prevalence;
     vector[NSB+1] sd_abundance = sqrt(var_prop_abundance) * global_scale_abundance;
-    vector[NSB] alpha_prevalence_log = 2*(sigma_prevalence - sd_prevalence) - log2(); // OU alpha_prevalence is function of total variance for each factor and the rate of evolution at each branch (http://web.math.ku.dk/~susanne/StatDiff/Overheads1b)
+    vector[NSB] alpha_prevalence_log = 2*(sigma_prevalence - sd_prevalence[1:NSB]) - log2(); // OU alpha_prevalence is function of total variance for each factor and the rate of evolution at each branch (http://web.math.ku.dk/~susanne/StatDiff/Overheads1b)
     vector[NSB] alpha_abundance_log = 2*(sigma_abundance - sd_abundance[1:NSB]) - log2(); // OU alpha_abundance is function of total variance for each factor and the rate of evolution at each branch
     vector[NSB] alpha_prevalence = exp(alpha_prevalence_log);
     vector[NSB] alpha_abundance = exp(alpha_abundance_log);
@@ -77,14 +78,15 @@ transformed parameters {
     }
     time_sqrt = sqrt(time);
     time_log = log(time);
-    beta_prevalence[,self[1]] = sd_prevalence[idx] .* delta_prevalence[,self[1]];
-    beta_abundance[,self[1]] = sd_abundance[idx] .* delta_abundance[,self[1]];
+    beta_prevalence[,self[1]] = theta_prevalence + sd_prevalence[idx] .* delta_prevalence[,self[1]];
+    beta_abundance[,self[1]] = zeros_vector(NB_s); // this makes delta_abundance[,self[1]] unused in model
     for(m in 2:NN) {
         vector[NSB] natp = -exp(alpha_prevalence_log + time_log[self[m]]);
         vector[NSB] nata = -exp(alpha_abundance_log + time_log[self[m]]);
         beta_prevalence[,self[m]]
             = exp(natp)[idx] .* beta_prevalence[,ancestor[m]]
-              + sigma_prevalence[idx] .* exp(0.5 * log1m_exp(2 * natp[idx]) - (sigma_prevalence - sd_prevalence)[idx] - log2()) .* delta_prevalence[,self[m]];
+              + (1-exp(natp))[idx] .* theta_prevalence
+              + sigma_prevalence[idx] .* exp(0.5 * log1m_exp(2 * natp[idx]) - (sigma_prevalence - sd_prevalence[1:NSB])[idx] - log2()) .* delta_prevalence[,self[m]];
         beta_abundance[,self[m]]
             = exp(nata)[idx] .* beta_abundance[,ancestor[m]]
               + sigma_abundance[idx] .* exp(0.5 * log1m_exp(2 * nata[idx]) - (sigma_abundance - sd_abundance[1:NSB])[idx] - log2()) .* delta_abundance[,self[m]];
@@ -105,6 +107,7 @@ model {
     target += student_t_lpdf(global_scale_abundance | 5, 0, 2.5);
     target += student_t_lpdf(sigma_prevalence | 5, 0, 2.5);
     target += student_t_lpdf(sigma_abundance | 5, 0, 2.5);
+    target += student_t_lpdf(theta_prevalence | 5, 0, sd_prevalence[(NSB+1):(2*NSB)][idx]);
     target += student_t_lpdf(to_vector(delta_prevalence) | 5,0,1); // fixed rate of evolution but allowing outliers
     target += student_t_lpdf(to_vector(delta_abundance) | 5,0,1); // fixed rate of evolution but allowing outliers
     target += generalized_std_normal_1_lpdf(inv_log_less_contamination / inv_log_max_contam | shape_gnorm);   // shrink amount of contamination in 'true zeros' toward zero
