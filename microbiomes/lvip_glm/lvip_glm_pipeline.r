@@ -17,12 +17,9 @@ modelMat <- modelMat[-1,]
 idx <- sapply(factorNames, function(x) which(x == unique(factorNames)))
 
 library(ape)
-microbeTree <- chronoMPL(phytools::midpoint.root(read.tree(phy_fp)))
-microbeTree$edge.length[microbeTree$edge.length <= 0] <- min(microbeTree$edge.length[microbeTree$edge.length > 0])
-microbeTree <- phytools::force.ultrametric(microbeTree)
-microbeTree$edge.length <- microbeTree$edge.length / max(phytools::nodeHeights(microbeTree))
-microbeTree <- di2multi(microbeTree)
+microbeTree <- phytools::midpoint.root(read.tree(phy_fp))
 finalMicrobeTree <- reorder(drop.tip(microbeTree, microbeTree$tip.label[!microbeTree$tip.label %in% colnames(counts)]), 'pruningwise')
+finalMicrobeTree$edge.length <- finalMicrobeTree$edge.length / mean(phytools::nodeHeights(finalMicrobeTree)[finalMicrobeTree$edge[,2] <= length(finalMicrobeTree$tip.label),2])
 
 counts <- counts[,finalMicrobeTree$tip.label]
 
@@ -32,7 +29,7 @@ NT <- length(microbeTips)
 NI <- finalMicrobeTree$Nnode
 NN <- NI + NT
 sa <- rbind(finalMicrobeTree$edge,c(0,NT+1))[NN:1,]
-time <- c(finalMicrobeTree$edge.length[1:length(finalMicrobeTree$tip.label)],1,finalMicrobeTree$edge.length[(length(finalMicrobeTree$tip.label)+1):length(finalMicrobeTree$edge.length)])
+divergence <- finalMicrobeTree$edge.length[order(finalMicrobeTree$edge[,2])]
 
 ##
 NS <- nrow(modelMat)
@@ -51,7 +48,7 @@ standat <- list(NS                 = NS,
                 NSB                = NSB,
                 idx                = idx,
                 count              = t(counts),
-                time               = time,
+                divergence         = divergence,
                 self               = sa[,2],
                 ancestor           = sa[,1],
                 X_s                = modelMat,
@@ -64,6 +61,7 @@ save.image(file.path(output_prefix, 'setup.RData'))
 sampling_command <- paste('./lvip_glm',
                           paste0('data file=', file.path(output_prefix, 'data.json')),
                           #paste0('init=', file.path(output_prefix, 'inits.json')),
+                          'init=1',
                           'output',
                           paste0('file=', file.path(output_prefix, 'samples_sampling.csv')),
                           paste0('refresh=', 1),
@@ -77,8 +75,8 @@ sampling_command <- paste('./lvip_glm',
                           #'init_buffer=10',
                           #'window=2',
                           'term_buffer=50',
-                          'num_warmup=1000',
-                          'num_samples=1000',
+                          'num_warmup=10000',
+                          'num_samples=2000',
                           ('opencl platform=0 device=0')[opencl],
                           sep=' ')
 
@@ -106,6 +104,18 @@ monteCarloP <- function(x, pn='p') {
 } # https://arxiv.org/pdf/1603.05766.pdf
 
 stan.fit.draws <- stan.fit$post_warmup_draws
+
+time <- stan.fit.draws[,,grep('^time\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+time <- apply(time,3,median)
+
+finalMicrobeTree_time <- finalMicrobeTree
+finalMicrobeTree_time$edge.length <- rev(time[sa[,2]])
+
+var_prop_prevalence <- stan.fit.draws[,,grep('^var_prop_prevalence\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+var_prop_prevalence <- apply(var_prop_prevalence,3,median)
+
+var_prop_abundance <- stan.fit.draws[,,grep('^var_prop_abundance\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+var_prop_abundance <- apply(var_prop_abundance,3,median)
 
 sigma_prevalence <- stan.fit.draws[,,grep('^sigma_prevalence\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
 sigma_prevalence <- apply(sigma_prevalence,3,median)
@@ -144,34 +154,9 @@ delta_prevalence_sig <- array(anysig,dim=c(NB_s,NN))
 which(delta_prevalence_sig, arr.ind = T)
 
 
-delta_prevalence_med <- apply(delta_prevalence,3,median)
-delta_prevalence_med <- array(delta_prevalence,dim=c(NB_s,NN))
-
+delta_prevalence_med <- array(apply(delta_prevalence,3,median),dim=c(NB_s,NN))
 
 delta_prevalence <- array(delta_prevalence,dim=c(dim(delta_prevalence)[c(1,2)],NB_s,NN))
-phy2 <- finalMicrobeTree
-delta_prevalence_from_root <- array(dim=dim(delta_prevalence))
-for(fact in 1:dim(delta_prevalence)[[3]]) {
-  for(chain in 1:dim(delta_prevalence)[[2]]) {
-    for(iter in 1:dim(delta_prevalence)[[1]]) {
-      phy2$edge.length <- delta_prevalence[iter,chain,fact,-(NT+1)]
-      temp <- phytools::nodeHeights(phy2)[,2]
-      delta_prevalence_from_root[iter,chain,fact,] <- c(temp[1:NT],delta_prevalence[iter,chain,fact,NT+1],temp[(NT+1):(NN-1)])
-    }
-  }
-}
-
-
-pos1 <- apply(delta_prevalence_from_root,c(3,4),monteCarloP,pn='p')
-possig <- pos1 < 0.1
-neg1 <- apply(delta_prevalence_from_root,c(3,4),monteCarloP,pn='n')
-negsig <- neg1 < 0.1
-anysig <- possig | negsig
-delta_prevalence_from_root_sig <- array(anysig,dim=c(NB_s,NN))
-
-which(delta_prevalence_from_root_sig, arr.ind = T)
-
-
 
 
 delta_abundance <- stan.fit.draws[,,grep('^delta_abundance\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
@@ -183,29 +168,64 @@ negsig <- neg1 < 0.05
 anysig <- possig | negsig
 delta_abundance_sig <- array(anysig,dim=c(NB_s,NN))
 
-delta_abundance_med <- apply(delta_abundance,3,median)
-delta_abundance_med <- array(delta_abundance_med,dim=c(NB_s,NN))
+which(delta_abundance_sig, arr.ind = T)
+
+
+delta_abundance_med <- array(apply(delta_abundance,3,median),dim=c(NB_s,NN))
 
 delta_abundance <- array(delta_abundance,dim=c(dim(delta_abundance)[c(1,2)],NB_s,NN))
-phy2 <- finalMicrobeTree
-delta_abundance_from_root <- array(dim=dim(delta_abundance))
-for(fact in 1:dim(delta_abundance)[[3]]) {
-  for(chain in 1:dim(delta_abundance)[[2]]) {
-    for(iter in 1:dim(delta_abundance)[[1]]) {
-      phy2$edge.length <- delta_abundance[iter,chain,fact,-(NT+1)]
-      temp <- phytools::nodeHeights(phy2)[,2]
-      delta_abundance_from_root[iter,chain,fact,] <- c(temp[1:NT],delta_abundance[iter,chain,fact,NT+1],temp[(NT+1):(NN-1)])
+
+
+
+beta_prevalence <- array(stan.fit.draws[,,grep('^beta_prevalence\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE], dim=dim(delta_prevalence))
+beta_prevalence_delta_root <- array(dim=dim(beta_prevalence))
+for(fact in 1:dim(beta_prevalence)[[3]]) {
+  for(chain in 1:dim(beta_prevalence)[[2]]) {
+    for(iter in 1:dim(beta_prevalence)[[1]]) {
+      beta_prevalence_delta_root[iter,chain,fact,] <- beta_prevalence[iter,chain,fact,] - beta_prevalence[iter,chain,fact,NT+1]
     }
   }
 }
 
-
-pos1 <- apply(delta_abundance_from_root,c(3,4),monteCarloP,pn='p')
+pos1 <- apply(beta_prevalence_delta_root,c(3,4),monteCarloP,pn='p')
 possig <- pos1 < 0.1
-neg1 <- apply(delta_abundance_from_root,c(3,4),monteCarloP,pn='n')
+neg1 <- apply(beta_prevalence_delta_root,c(3,4),monteCarloP,pn='n')
 negsig <- neg1 < 0.1
 anysig <- possig | negsig
-delta_abundance_from_root_sig <- array(anysig,dim=c(NB_s,NN))
+beta_prevalence_delta_root_sig <- array(anysig,dim=c(NB_s,NN))
+
+which(beta_prevalence_delta_root_sig, arr.ind = T)
+
+
+
+
+beta_abundance <- array(stan.fit.draws[,,grep('^beta_abundance\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE], dim=dim(delta_prevalence))
+beta_abundance_delta_root <- array(dim=dim(beta_abundance))
+for(fact in 1:dim(beta_abundance)[[3]]) {
+  for(chain in 1:dim(beta_abundance)[[2]]) {
+    for(iter in 1:dim(beta_abundance)[[1]]) {
+      beta_abundance_delta_root[iter,chain,fact,] <- beta_abundance[iter,chain,fact,] - beta_abundance[iter,chain,fact,NT+1]
+    }
+  }
+}
+
+pos1 <- apply(beta_abundance_delta_root,c(3,4),monteCarloP,pn='p')
+possig <- pos1 < 0.1
+neg1 <- apply(beta_abundance_delta_root,c(3,4),monteCarloP,pn='n')
+negsig <- neg1 < 0.1
+anysig <- possig | negsig
+beta_abundance_delta_root_sig <- array(anysig,dim=c(NB_s,NN))
+
+which(beta_abundance_delta_root_sig, arr.ind = T)
+
+
+
+
 
 tax <- read.table(taxa_fp, sep='\t', row.names=1)
 tax[finalMicrobeTree$tip.label[phangorn::Descendants(finalMicrobeTree,2835)[[1]]],]
+
+
+
+time_absolute <- stan.fit.draws[,,grep('^time_absolute\\[.*',dimnames(stan.fit.draws)[[3]]), drop=FALSE]
+
